@@ -31,24 +31,55 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mimeTypeRef = useRef<string>('');
   
-  // Reduced chunk duration for faster feedback (2s)
-  const CHUNK_DURATION = 2000; 
+  // Queue Management for Ordered Output
+  const chunkSequenceRef = useRef(0);
+  const nextOutputSequenceRef = useRef(0);
+  const pendingChunksRef = useRef<Map<number, string>>(new Map());
 
-  const processAudioChunk = useCallback(async (blob: Blob) => {
-    // Lower threshold to capture short commands or low activity streams
-    if (blob.size < 100) return; 
+  // Faster updates for streaming feel
+  const CHUNK_DURATION = 1000; 
+
+  const flushQueue = useCallback(() => {
+    let nextId = nextOutputSequenceRef.current;
+    
+    // Process available consecutive chunks
+    while (pendingChunksRef.current.has(nextId)) {
+        const text = pendingChunksRef.current.get(nextId);
+        pendingChunksRef.current.delete(nextId);
+        
+        if (text && text.trim()) {
+            onTranscript(text);
+        }
+        
+        nextId++;
+    }
+    nextOutputSequenceRef.current = nextId;
+  }, [onTranscript]);
+
+  const processAudioChunk = useCallback(async (blob: Blob, sequenceId: number) => {
+    // Lower threshold to capture short commands
+    if (blob.size < 50) {
+        // Even if empty, we must mark this sequence as done to not block the queue
+        pendingChunksRef.current.set(sequenceId, "");
+        flushQueue();
+        return;
+    }
 
     try {
       const apiKey = process.env.API_KEY;
-      if (!apiKey) return;
+      if (!apiKey) throw new Error("No API Key");
 
       const ai = new GoogleGenAI({ apiKey });
       const base64Audio = await blobToBase64(blob);
 
       const prompt = `
-        Task: Transcribe the speech in this audio verbatim.
-        Language: The audio is likely in ${language}.
-        Output: Only the transcribed text. If no speech is detected, output nothing.
+        Task: Transcribe this audio segment from a continuous stream verbatim.
+        Language: ${language}.
+        Rules:
+        - Output ONLY the transcribed text.
+        - No notes, no explanations.
+        - If audio is cut off, transcribe what is audible.
+        - If no speech, return empty string.
       `;
 
       // Use the actual mime type determined by the recorder
@@ -67,14 +98,19 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
         ]
       });
 
-      const text = response.text?.trim();
-      if (text) {
-        onTranscript(text);
-      }
+      const text = response.text?.trim() || "";
+      
+      // Store result and attempt to flush
+      pendingChunksRef.current.set(sequenceId, text);
+      flushQueue();
+
     } catch (e) {
-      // Silent error for transcription glitches to avoid console spam
+      // If a chunk fails, mark it empty so queue proceeds
+      console.warn(`Chunk ${sequenceId} failed processing`, e);
+      pendingChunksRef.current.set(sequenceId, "");
+      flushQueue();
     }
-  }, [language, onTranscript]);
+  }, [language, flushQueue]);
 
   useEffect(() => {
     // 1. Basic Stream Validation
@@ -89,24 +125,27 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
         return;
     }
 
-    // Cleanup previous recorder if it exists
+    // Cleanup previous recorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
         mediaRecorderRef.current.stop();
       } catch (e) { /* ignore */ }
     }
 
+    // Reset Queue state on new stream start
+    chunkSequenceRef.current = 0;
+    nextOutputSequenceRef.current = 0;
+    pendingChunksRef.current.clear();
+
     const startRecording = () => {
-        // 2. Late Binding Validation (Stream must still be active after timeout)
+        // 2. Late Binding Validation
         if (!stream || !stream.active) {
-            console.warn("Stream ended before recorder could start");
             setIsTranscribing(false);
             return;
         }
 
         const currentTrack = stream.getAudioTracks()[0];
         if (!currentTrack || currentTrack.readyState !== 'live') {
-             console.warn("Audio track is not live");
              setIsTranscribing(false);
              return;
         }
@@ -131,12 +170,10 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
                 }
             }
 
-            // Attempt to create recorder
             let recorder: MediaRecorder;
             try {
                 recorder = new MediaRecorder(stream, options);
             } catch (e) {
-                // Final fallback: Let browser decide everything
                 recorder = new MediaRecorder(stream);
             }
 
@@ -145,7 +182,9 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
 
             recorder.ondataavailable = (e) => {
                 if (e.data.size > 0) {
-                    processAudioChunk(e.data);
+                    // Assign ID immediately to preserve order
+                    const id = chunkSequenceRef.current++;
+                    processAudioChunk(e.data, id);
                 }
             };
 
@@ -153,7 +192,6 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
                 console.warn("MediaRecorder Error:", e);
             };
 
-            // Use timeslice to get chunks automatically
             try {
                 recorder.start(CHUNK_DURATION);
                 setIsTranscribing(true);
@@ -168,7 +206,7 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
         }
     };
 
-    // Increased delay to 250ms to ensure stream is fully "ready" in the browser media pipeline
+    // Safety delay for browser media pipeline
     const timer = setTimeout(startRecording, 250);
 
     return () => {
