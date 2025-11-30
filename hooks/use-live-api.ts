@@ -1,97 +1,69 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { float32ToBase64, convertPCM24kToFloat32 } from '../utils/audio-utils';
-import { ConnectionState, VoiceName, AudioDevice } from '../types';
+import { convertPCM24kToFloat32 } from '../utils/audio-utils';
+import { ConnectionState, VoiceName } from '../types';
 
 interface UseLiveApiProps {
-  onTranscriptUpdate?: (text: string, isUser: boolean, isFinal: boolean) => void;
   targetLanguage?: string;
-  sourceLanguage?: string;
-  audioDevice?: AudioDevice;
-  enableAudioInput?: boolean; // Control whether to stream audio to the model
 }
 
 export function useLiveApi({ 
-  onTranscriptUpdate, 
   targetLanguage = 'Spanish', 
-  sourceLanguage = 'Auto Detect',
-  audioDevice,
-  enableAudioInput = true
 }: UseLiveApiProps = {}) {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
-  const [volume, setVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [volume, setVolume] = useState(0); // Only for output volume now
   
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
   const nextStartTimeRef = useRef<number>(0);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number>(0);
   
-  // We need to keep the session promise to send data
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
 
-  const cleanupAudio = useCallback(() => {
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
-    }
-    if (sourceRef.current) {
-      sourceRef.current.disconnect();
-      sourceRef.current = null;
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    if (outputAudioContextRef.current) {
-      outputAudioContextRef.current.close();
-      outputAudioContextRef.current = null;
-    }
+  // Initialize output audio context
+  useEffect(() => {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    outputAudioContextRef.current = new AudioContextClass({ sampleRate: 24000 });
+    
+    // Setup analyzer for visualization of the *spoken* audio
+    const analyser = outputAudioContextRef.current.createAnalyser();
+    analyser.fftSize = 256;
+    analyserRef.current = analyser;
+
+    // Visualizer Loop
+    const updateVolume = () => {
+        if (analyserRef.current) {
+            const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+            analyserRef.current.getByteFrequencyData(dataArray);
+            
+            // Calculate average volume
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+            }
+            const avg = sum / dataArray.length;
+            setVolume(avg / 128); // Normalize roughly 0-1
+        }
+        animationFrameRef.current = requestAnimationFrame(updateVolume);
+    };
+    updateVolume();
+
+    return () => {
+        if (outputAudioContextRef.current) {
+            outputAudioContextRef.current.close();
+        }
+        if (animationFrameRef.current) {
+            cancelAnimationFrame(animationFrameRef.current);
+        }
+    };
   }, []);
 
   const disconnect = useCallback(async () => {
     setConnectionState(ConnectionState.DISCONNECTED);
-    cleanupAudio();
     sessionPromiseRef.current = null;
-  }, [cleanupAudio]);
-
-  // Specialized function to capture Zoom Meeting Audio
-  const captureZoomAudio = async (): Promise<MediaStream> => {
-    console.log("Initializing Zoom Audio Bridge...");
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: 1,
-          height: 1,
-          frameRate: 1, 
-          displaySurface: "window", 
-        } as any, 
-        audio: {
-          echoCancellation: false, 
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 2,
-          sampleRate: 48000,
-          // @ts-ignore
-          systemAudio: 'include' 
-        }
-      });
-      return stream;
-    } catch (error: any) {
-      console.error("Zoom Bridge Connection Failed", error);
-      if (error.name === 'NotAllowedError' && error.message.includes('permissions policy')) {
-        throw new Error("Screen sharing is blocked by the environment. Please ensure 'display-capture' permission is allowed.");
-      }
-      throw error;
-    }
-  };
+  }, []);
 
   const connect = useCallback(async () => {
     try {
@@ -105,130 +77,52 @@ export function useLiveApi({
 
       const ai = new GoogleGenAI({ apiKey });
 
-      // Initialize Audio Contexts
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      audioContextRef.current = new AudioContextClass({ sampleRate: 16000 }); 
-      outputAudioContextRef.current = new AudioContextClass({ sampleRate: 24000 }); 
-
-      // Get Audio Stream based on selected device
-      let stream: MediaStream;
-
-      if (audioDevice?.type === 'zoom') {
-        stream = await captureZoomAudio();
-      } else if (audioDevice?.type === 'system') {
-        try {
-          stream = await navigator.mediaDevices.getDisplayMedia({
-            video: { width: 1, height: 1 },
-            audio: {
-              echoCancellation: false,
-              noiseSuppression: false,
-              autoGainControl: false,
-              // @ts-ignore
-              systemAudio: 'include'
-            }
-          });
-        } catch (err: any) {
-          if (err.name === 'NotAllowedError' && err.message.includes('permissions policy')) {
-            throw new Error("Screen sharing blocked by policy. 'display-capture' permission required.");
-          }
-          throw err;
-        }
-      } else {
-        const constraints: MediaStreamConstraints = {
-          audio: audioDevice?.deviceId 
-            ? { deviceId: { exact: audioDevice.deviceId } } 
-            : true
-        };
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      }
-
-      if (stream.getAudioTracks().length === 0) {
-        stream.getTracks().forEach(track => track.stop());
-        throw new Error("No audio detected. You MUST check the 'Share Audio' box in the browser popup.");
-      }
-
-      mediaStreamRef.current = stream;
-
-      stream.getTracks().forEach(track => {
-        track.onended = () => {
-          console.log("Stream ended");
-          disconnect();
-        };
-      });
-
-      // Setup Input Audio Processing
-      sourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
-      processorRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
-
-      const silentGain = audioContextRef.current.createGain();
-      silentGain.gain.value = 0;
-      sourceRef.current.connect(processorRef.current);
-      processorRef.current.connect(silentGain);
-      silentGain.connect(audioContextRef.current.destination);
-
-      // Determine System Instruction based on pipeline mode
-      let systemInstruction = "";
-      
-      if (!enableAudioInput) {
-        // TTS / Reader Mode (Hybrid Pipeline)
-        // STRICT INSTRUCTION: Pure Reader, No Chat, No Audio Listening
-        systemInstruction = `
-        ROLE: High-fidelity Text-to-Speech Reader.
-        INPUT: You will receive text messages that are ALREADY TRANSLATED into ${targetLanguage}.
-        TASK: Read the text aloud in ${targetLanguage} with a natural, professional voice.
+      // STRICT TTS Configuration with Charismatic Persona
+      const systemInstruction = `
+        ROLE: Professional Voice Actor / Dynamic Orator.
+        TASK: You will receive text in ${targetLanguage}. Your ONLY job is to read it aloud.
         
-        CRITICAL RULES:
-        1. DO NOT translate the text. It is already in the target language.
-        2. DO NOT respond conversationally (e.g., no "Okay", "Reading now").
-        3. DO NOT output text. Only output AUDIO.
-        4. If the text is empty or meaningless, remain silent.
-        `;
-      } else if (audioDevice?.type === 'zoom') {
-        // Zoom Interpreter Mode
-        systemInstruction = `
-        TASK: You are a professional simultaneous interpreter for a Zoom meeting.
-        INPUT SOURCE: The audio is coming directly from a Zoom meeting stream.
-        GUIDELINES:
-        1. Accurately translate speech from all participants in real-time.
-        2. IGNORE "Recording in progress", "Mute", "Unmute" announcements.
-        3. IGNORE join/leave chimes and background notification sounds.
-        4. Focus on the human speakers. If multiple people speak, prioritize the dominant voice.
-        5. Maintain a neutral, professional tone.
-        Target Language: ${targetLanguage}.
-        `;
-      } else {
-         // Standard Interpreter Mode
-         systemInstruction = `You are Eburon, an advanced AI translator. 
-          Input Audio Language: ${sourceLanguage === 'Auto Detect' ? 'Detect automatically' : sourceLanguage}.
-          Target Language: ${targetLanguage}.
-          Task: Translate the input audio into the Target Language and speak it out loud.
-          Constraint: If the input audio is detected to be the same as the Target Language, translate it into English (bidirectional mode).
-          Keep translations precise, natural, and immediate. Do not add filler conversational text, just translate.`;
-      }
+        VOICE STYLE GUIDE (Apply STRICTLY):
+        1. DYNAMIC & MODULATED: Do not be monotone. Shift frequently from soft, conversational whispers (to draw the audience in) to loud, projecting shouts (to emphasize power and conviction).
+        2. RHYTHMIC & REPETITIVE: Use a "preaching cadence". Build momentum rhythmically. Use repetition (anaphora) effectively.
+        3. STACCATO & EMPHATIC: When listing struggles or key points, use a punchy, staccato delivery to make words land heavily.
+        4. THEATRICAL: Use dramatic pauses to let concepts sink in. Act out the emotions (defiance, hope, authority).
+        
+        TONE:
+        - Passionate and Urgent.
+        - Encouraging but Authoritative.
+        - Defiant against negativity.
+        - Speak with ABSOLUTE CONVICTION.
+        
+        RULES:
+        1. DO NOT translate. The text provided is already in ${targetLanguage}.
+        2. DO NOT converse. Do not say "Okay" or "Sure".
+        3. READ IMMEDIATELY.
+        4. If you receive no text, be silent.
+      `;
 
       const config = {
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' as VoiceName } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' as VoiceName } }, // Switched to Fenrir for more intensity/depth
           },
-          // CRITICAL: Explicitly undefined when not using audio input to prevent model from expecting/processing audio
-          inputAudioTranscription: enableAudioInput ? {} : undefined, 
+          // CRITICAL: Disable all input audio processing
+          inputAudioTranscription: undefined, 
           systemInstruction: systemInstruction,
         },
       };
 
-      // Connect to Gemini Live
       const sessionPromise = ai.live.connect({
         ...config,
         callbacks: {
           onopen: () => {
-            console.log('Gemini Live Connected');
+            console.log('Gemini Live Connected (TTS Mode)');
             setConnectionState(ConnectionState.CONNECTED);
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Handle Audio Output
+            // Handle Audio Output (TTS)
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             
             if (base64Audio && outputAudioContextRef.current) {
@@ -256,11 +150,14 @@ export function useLiveApi({
                 
                 const source = outputAudioContextRef.current.createBufferSource();
                 source.buffer = audioBuffer;
-                const gainNode = outputAudioContextRef.current.createGain();
-                gainNode.gain.value = 1.0; 
                 
-                source.connect(gainNode);
-                gainNode.connect(outputAudioContextRef.current.destination);
+                // Route through analyser for visualization
+                if (analyserRef.current) {
+                    source.connect(analyserRef.current);
+                    analyserRef.current.connect(outputAudioContextRef.current.destination);
+                } else {
+                    source.connect(outputAudioContextRef.current.destination);
+                }
                 
                 source.start(nextStartTimeRef.current);
                 nextStartTimeRef.current += audioBuffer.duration;
@@ -268,23 +165,11 @@ export function useLiveApi({
                  console.error("Error processing output audio", e);
                }
             }
-
-            // Handle Input Transcription (User Speech) - Only if streaming audio
-            if (enableAudioInput) {
-                const inputTranscript = message.serverContent?.inputTranscription?.text;
-                if (inputTranscript && onTranscriptUpdate) {
-                  onTranscriptUpdate(inputTranscript, true, false);
-                }
-
-                if (message.serverContent?.turnComplete && onTranscriptUpdate) {
-                  onTranscriptUpdate("", true, true);
-                }
-            }
           },
           onerror: (err) => {
             console.error('Gemini Live Error:', err);
             setConnectionState(ConnectionState.ERROR);
-            setError("Connection Error. Please check permissions and try again.");
+            setError("TTS Connection Error.");
           },
           onclose: () => {
             console.log('Gemini Live Closed');
@@ -295,46 +180,16 @@ export function useLiveApi({
 
       sessionPromiseRef.current = sessionPromise;
 
-      // Audio Processing Loop
-      processorRef.current.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        
-        // Always calculate volume for visualizer
-        let sum = 0;
-        for (let i = 0; i < inputData.length; i++) {
-          sum += inputData[i] * inputData[i];
-        }
-        const rms = Math.sqrt(sum / inputData.length);
-        setVolume(rms);
-
-        // SECURITY: Strictly block audio sending if enableAudioInput is false
-        if (enableAudioInput) {
-            const base64PCM = float32ToBase64(inputData);
-            sessionPromise.then((session) => {
-              session.sendRealtimeInput({
-                media: {
-                  mimeType: 'audio/pcm;rate=16000',
-                  data: base64PCM
-                }
-              });
-            });
-        }
-      };
-
     } catch (error: any) {
       console.error('Failed to connect:', error);
       setConnectionState(ConnectionState.ERROR);
-      setError(error.message || "Failed to initialize audio.");
-      cleanupAudio();
+      setError(error.message || "Failed to initialize TTS.");
     }
-  }, [targetLanguage, sourceLanguage, cleanupAudio, audioDevice, onTranscriptUpdate, disconnect, enableAudioInput]);
+  }, [targetLanguage, disconnect]);
 
-  // Method to manually send text to be spoken (TTS)
   const sendText = useCallback(async (text: string) => {
     if (sessionPromiseRef.current) {
         const session = await sessionPromiseRef.current;
-        // Sending text directly to the model
-        // The System Instruction ensures it simply reads this text aloud
         session.send({ parts: [{ text }] });
     }
   }, []);

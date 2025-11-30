@@ -1,10 +1,12 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles, MicOff } from 'lucide-react';
+import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles, MicOff, Waves } from 'lucide-react';
 import clsx from 'clsx';
 import { useLiveApi } from './hooks/use-live-api';
 import { useMediaDevices } from './hooks/use-media-devices';
 import { useWebSpeech } from './hooks/use-web-speech';
+import { useMediaStream } from './hooks/use-media-stream';
+import { useFlashTranscriber } from './hooks/use-flash-transcriber';
 import { translateText } from './utils/translator';
 import { LANGUAGES, getLanguageCode } from './utils/languages';
 import AudioVisualizer from './components/AudioVisualizer';
@@ -15,15 +17,13 @@ function App() {
   const [sourceLanguage, setSourceLanguage] = useState('Auto Detect');
   const [targetLanguage, setTargetLanguage] = useState('Spanish');
   const [messages, setMessages] = useState<TranscriptItem[]>([]);
-  const [geminiTranscript, setGeminiTranscript] = useState('');
   const [selectedDevice, setSelectedDevice] = useState<AudioDevice | undefined>(undefined);
-  // Default to the user-provided Zoom link
   const [zoomLink, setZoomLink] = useState('https://us05web.zoom.us/j/9503133821?pwd=Q6fXaVzbmdskUNdUC2AjOZtzjCroIT.1');
   const scrollRef = useRef<HTMLDivElement>(null);
   
   const { devices, fetchDevices, permissionGranted } = useMediaDevices();
   
-  // Set default device when loaded
+  // Set default device
   useEffect(() => {
     if (devices.length > 0 && !selectedDevice) {
       const defaultMic = devices.find(d => d.type === 'microphone');
@@ -31,33 +31,18 @@ function App() {
     }
   }, [devices, selectedDevice]);
 
-  // PIPELINE LOGIC:
-  // If Mic -> Use Hybrid Pipeline (WebSpeech -> Flash -> Live TTS)
-  // If System/Zoom -> Use Native Pipeline (Audio -> Live Audio) because WebSpeech doesn't support streams
-  const isHybridMode = selectedDevice?.type === 'microphone';
-  
-  // -- Gemini Live Hook --
-  const handleTranscriptUpdate = useCallback((text: string, isUser: boolean, isFinal: boolean) => {
-    // Only used in Native Mode (Zoom/System)
-    if (isUser) {
-      if (isFinal) {
-        setGeminiTranscript((prev) => {
-          if (prev.trim()) {
-            setMessages(old => [...old, {
-              id: Date.now().toString(),
-              speaker: 'user',
-              text: prev.trim(),
-              timestamp: new Date()
-            }]);
-          }
-          return '';
-        });
-      } else {
-        setGeminiTranscript(prev => prev + text);
-      }
-    }
-  }, []);
+  // --- 1. SOURCE: Media Stream Acquisition ---
+  // Gets the stream from Mic, System, or Zoom
+  const { 
+    stream, 
+    startStream, 
+    stopStream, 
+    isStreaming, 
+    error: streamError 
+  } = useMediaStream(selectedDevice);
 
+  // --- 2. DESTINATION: TTS Engine (Gemini Live) ---
+  // Reads aloud the translated text
   const { 
     connect: connectLive, 
     disconnect: disconnectLive, 
@@ -66,20 +51,18 @@ function App() {
     volume,
     error: liveError
   } = useLiveApi({ 
-    sourceLanguage,
     targetLanguage,
-    onTranscriptUpdate: handleTranscriptUpdate,
-    audioDevice: selectedDevice,
-    enableAudioInput: !isHybridMode // Disable Live API audio processing in Hybrid Mode
   });
 
-  // -- Web Speech Hook (Hybrid Mode Only) --
+  // --- 3A. TRANSCRIPTION (Microphone) ---
+  // Uses Web Speech API for low latency local mic transcription
   const webSpeechLang = getLanguageCode(sourceLanguage);
   
-  const handleWebSpeechFinal = useCallback(async (text: string) => {
-    if (!isHybridMode || connectionState !== ConnectionState.CONNECTED) return;
-    
-    // 1. Log Original
+  // Handlers for Unified Processing
+  const processTranscript = useCallback(async (text: string) => {
+    if (!text.trim()) return;
+
+    // Log Original
     setMessages(old => [...old, {
       id: Date.now().toString(),
       speaker: 'user',
@@ -87,22 +70,28 @@ function App() {
       timestamp: new Date()
     }]);
 
-    // 2. Translate using Gemini Flash
+    // Translate (Flash)
     try {
         const translated = await translateText(text, sourceLanguage, targetLanguage);
         
-        // 3. Log Translation (Optional, mostly for debug or split view)
-        // For now, we just make the bot speak it. 
-        
-        // 4. Send to Live API to Read Aloud
-        if (translated) {
+        // Log Translation
+        setMessages(old => [...old, {
+          id: Date.now() + '_trans',
+          speaker: 'eburon',
+          text: translated, // Show translation in chat
+          timestamp: new Date()
+        }]);
+
+        // TTS (Live)
+        if (translated && connectionState === ConnectionState.CONNECTED) {
             await sendTextToLive(translated);
         }
     } catch (e) {
-        console.error("Hybrid Pipeline Error", e);
+        console.error("Pipeline Error", e);
     }
-  }, [isHybridMode, connectionState, sourceLanguage, targetLanguage, sendTextToLive]);
+  }, [sourceLanguage, targetLanguage, connectionState, sendTextToLive]);
 
+  // Web Speech Hook
   const { 
     isListening: isWebSpeechListening, 
     interimTranscript: webSpeechInterim, 
@@ -111,33 +100,61 @@ function App() {
     resetTranscript: resetWebSpeech
   } = useWebSpeech({ 
     language: webSpeechLang,
-    onFinalTranscript: handleWebSpeechFinal
+    onFinalTranscript: (text) => {
+      // Only process if we are in Microphone mode
+      if (selectedDevice?.type === 'microphone') {
+        processTranscript(text);
+      }
+    }
   });
 
-  const connect = useCallback(() => {
-    // 1. Connect Gemini Live (either as Translator or TTS engine)
+  // --- 3B. TRANSCRIPTION (System/Zoom) ---
+  // Uses Gemini Flash to transcribe the MediaStream since WebSpeech can't
+  const { isTranscribing: isFlashTranscribing } = useFlashTranscriber({
+    stream: selectedDevice?.type !== 'microphone' ? stream : null, // Only active for non-mic
+    onTranscript: processTranscript,
+    language: sourceLanguage === 'Auto Detect' ? undefined : sourceLanguage
+  });
+
+
+  // --- CONNECTION MANAGEMENT ---
+  const connect = useCallback(async () => {
+    // 1. Start Audio Stream (Mic or System)
+    await startStream();
+
+    // 2. Connect TTS Engine
     connectLive();
 
-    // 2. Start Web Speech if in Hybrid Mode
-    if (isHybridMode) {
+    // 3. Start Web Speech (only acts if mic)
+    if (selectedDevice?.type === 'microphone') {
       resetWebSpeech();
       startWebSpeech();
     }
-  }, [connectLive, isHybridMode, startWebSpeech, resetWebSpeech]);
+  }, [startStream, connectLive, startWebSpeech, resetWebSpeech, selectedDevice]);
 
   const disconnect = useCallback(() => {
+    stopStream();
     disconnectLive();
     stopWebSpeech();
-  }, [disconnectLive, stopWebSpeech]);
+  }, [stopStream, disconnectLive, stopWebSpeech]);
 
-  // Scroll to bottom of chat
+  const handleToggleConnection = () => {
+    if (connectionState === ConnectionState.CONNECTED || isStreaming) {
+      disconnect();
+    } else {
+      setMessages([]);
+      connect();
+    }
+  };
+
+  // Auto-scroll
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, geminiTranscript, webSpeechInterim]);
+  }, [messages, webSpeechInterim]);
 
-  // Request permissions on mount
+  // Initial Permission Request
   useEffect(() => {
     if (!permissionGranted) {
       navigator.mediaDevices.getUserMedia({ audio: true })
@@ -146,31 +163,18 @@ function App() {
     }
   }, [permissionGranted, fetchDevices]);
 
-  // Handle system messages
+  // Status Message
   useEffect(() => {
     if (connectionState === ConnectionState.CONNECTED) {
-      const modeText = isHybridMode 
-        ? "Hybrid Pipeline Active (WebSpeech -> Flash -> Live TTS)" 
-        : "Native Neural Pipeline Active (Direct Audio Translation)";
-        
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         speaker: 'eburon',
-        text: `Secure channel established. ${modeText}`,
+        text: `Pipeline Active: ${selectedDevice?.label} -> Transcription -> Translation -> TTS`,
         timestamp: new Date()
       }]);
     }
-  }, [connectionState, isHybridMode]);
+  }, [connectionState, selectedDevice]);
 
-  const handleToggleConnection = () => {
-    if (connectionState === ConnectionState.CONNECTED) {
-      disconnect();
-    } else {
-      setMessages([]);
-      setGeminiTranscript('');
-      connect();
-    }
-  };
 
   const handleOpenZoom = () => {
     window.open(zoomLink, '_blank');
@@ -179,9 +183,9 @@ function App() {
   const isConnected = connectionState === ConnectionState.CONNECTED;
   const isConnecting = connectionState === ConnectionState.CONNECTING;
 
-  // Determine which transcript to show in the "Live" bubble
-  const showWebSpeech = isWebSpeechListening && webSpeechInterim && isHybridMode;
-  const displayTranscript = showWebSpeech ? webSpeechInterim : geminiTranscript;
+  // Visual State
+  const isActive = isConnected && (isWebSpeechListening || isFlashTranscribing);
+  const displayInterim = selectedDevice?.type === 'microphone' ? webSpeechInterim : (isFlashTranscribing ? 'Analysing audio stream...' : '');
 
   const getSourceIcon = () => {
     if (selectedDevice?.type === 'zoom') return <Video size={10} />;
@@ -200,7 +204,7 @@ function App() {
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight text-white">EBURON <span className="text-eburon-accent">LIVE</span></h1>
-              <p className="text-xs text-gray-500 font-mono">NEURAL TRANSLATION LINK</p>
+              <p className="text-xs text-gray-500 font-mono">NEURAL TRANSLATION PIPELINE</p>
             </div>
           </div>
           
@@ -258,6 +262,7 @@ function App() {
           <div className="absolute inset-0 bg-gradient-to-b from-transparent to-eburon-900/50"></div>
 
           <div className="relative z-10 w-full flex flex-col items-center gap-4">
+             {/* Use volume from TTS engine for visualization since that's what we want to "see" Eburon speaking */}
              <AudioVisualizer volume={volume} isActive={isConnected} />
              
              {/* Device Selector */}
@@ -312,31 +317,35 @@ function App() {
 
              <div className="text-xs font-mono text-gray-500 mt-2 uppercase tracking-widest flex flex-col items-center gap-2">
                {isConnected ? (
-                  selectedDevice?.type === 'zoom' ? (
+                  <div className="flex flex-col items-center gap-1">
                     <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse shadow-[0_0_10px_#3b82f6]" />
-                      <span className="text-blue-400 font-bold">ZOOM_MEETING_ACTIVE</span>
+                         {selectedDevice?.type === 'zoom' ? (
+                            <>
+                                <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse shadow-[0_0_10px_#3b82f6]" />
+                                <span className="text-blue-400 font-bold">ZOOM_MEETING_ACTIVE</span>
+                            </>
+                         ) : (
+                            <>
+                                <div className="w-1.5 h-1.5 bg-eburon-accent rounded-full animate-pulse" />
+                                <span className="text-eburon-accent">PIPELINE_ACTIVE</span>
+                            </>
+                         )}
                     </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
-                      <span>Recording {selectedDevice?.label}</span>
-                    </div>
-                  )
+                    {isFlashTranscribing && <span className="text-[9px] text-gray-600">Processing Stream...</span>}
+                  </div>
                ) : 'System Standby'}
 
                {/* Pipeline Indicator */}
                {isConnected && (
                   <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/40 border border-gray-800 text-[10px] text-gray-400">
-                    <Sparkles size={10} className={isHybridMode ? "text-eburon-accent" : "text-gray-600"} />
-                    {isHybridMode ? "Hybrid Pipeline (Flash v2.5 + TTS)" : "Native Neural Pipeline (Live v2.5)"}
-                  </div>
-               )}
-                {/* Audio Security Indicator */}
-                {isConnected && isHybridMode && (
-                  <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-                    <MicOff size={10} className="text-red-500" />
-                    <span>Live API Audio Disabled (TTS Only)</span>
+                    <Waves size={10} className="text-gray-500" />
+                    <span>{selectedDevice?.type === 'microphone' ? 'WebSpeech' : 'Flash Audio'} Input</span>
+                    <span className="text-gray-600">→</span>
+                    <Globe size={10} className="text-eburon-accent" />
+                    <span>Flash Translate</span>
+                    <span className="text-gray-600">→</span>
+                    <Sparkles size={10} className="text-eburon-success" />
+                    <span>Live TTS</span>
                   </div>
                )}
              </div>
@@ -355,12 +364,12 @@ function App() {
         )}
 
         {/* Live Error */}
-        {liveError && (
+        {(liveError || streamError) && (
           <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-3 flex items-start gap-3">
             <AlertTriangle className="text-red-500 shrink-0 mt-0.5" size={16} />
             <div className="text-xs text-red-200/80">
-              <p className="font-bold mb-1">CONNECTION ERROR:</p>
-              <p>{liveError}</p>
+              <p className="font-bold mb-1">ERROR:</p>
+              <p>{liveError || streamError}</p>
             </div>
           </div>
         )}
@@ -381,10 +390,10 @@ function App() {
           </div>
           
           <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 pt-10 scroll-smooth">
-            {messages.length === 0 && !displayTranscript && !isConnected && (
+            {messages.length === 0 && !displayInterim && !isConnected && (
               <div className="h-full flex flex-col items-center justify-center text-gray-600 opacity-50">
                 <Globe size={48} className="mb-4 text-eburon-700" />
-                <p className="font-mono text-sm">Select language and initialize connection.</p>
+                <p className="font-mono text-sm">Select language and initialize pipeline.</p>
               </div>
             )}
             
@@ -393,7 +402,7 @@ function App() {
             ))}
 
             {/* Live Transcript Bubble (Interim) */}
-            {displayTranscript && (
+            {displayInterim && (
               <div className="flex gap-4 p-4 rounded-lg mb-2 border bg-eburon-900 border-eburon-800 text-gray-300 animate-in fade-in slide-in-from-bottom-2">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 bg-gray-700/20">
                    <User size={18} />
@@ -402,18 +411,15 @@ function App() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs font-bold uppercase tracking-wider opacity-70">
                       {selectedDevice?.type === 'system' || selectedDevice?.type === 'zoom' 
-                        ? 'System/Zoom Audio' 
-                        : 'Live Input'}
+                        ? 'Stream Analysis' 
+                        : 'Microphone Input'}
                     </span>
-                    <span className={clsx(
-                      "text-[10px] px-1 rounded animate-pulse",
-                      showWebSpeech ? "bg-eburon-success/10 text-eburon-success" : "bg-eburon-accent/10 text-eburon-accent"
-                    )}>
-                      {showWebSpeech ? 'WEB_SPEECH_V2' : 'LISTENING'}
+                    <span className="text-[10px] px-1 rounded animate-pulse bg-eburon-accent/10 text-eburon-accent">
+                      LISTENING
                     </span>
                   </div>
                   <p className="font-mono text-sm leading-relaxed text-gray-300">
-                    {displayTranscript}
+                    {displayInterim}
                   </p>
                 </div>
               </div>

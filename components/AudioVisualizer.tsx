@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef } from 'react';
 
 interface AudioVisualizerProps {
@@ -7,7 +8,7 @@ interface AudioVisualizerProps {
 
 const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ volume, isActive }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number>(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
