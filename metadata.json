@@ -1,0 +1,8 @@
+{
+  "name": "Eburon Live Translator",
+  "description": "Real-time voice translation and transcription system using Gemini Live API and Web Speech API.",
+  "requestFramePermissions": [
+    "microphone",
+    "display-capture"
+  ]
+}
