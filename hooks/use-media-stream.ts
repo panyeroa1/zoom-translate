@@ -7,7 +7,7 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
   const [error, setError] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
 
-  // Capture Zoom Meeting Audio
+  // Capture Zoom Meeting Audio (Window Level)
   const captureZoomAudio = async (): Promise<MediaStream> => {
     try {
       const displayStream = await navigator.mediaDevices.getDisplayMedia({
@@ -15,7 +15,7 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
           width: 1,
           height: 1,
           frameRate: 1,
-          displaySurface: "window",
+          displaySurface: "window", // Prefer window for Zoom app
         } as any,
         audio: {
           echoCancellation: false,
@@ -43,6 +43,23 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
 
       if (selectedDevice?.type === 'zoom') {
         newStream = await captureZoomAudio();
+      } else if (selectedDevice?.type === 'tab') {
+        // STRICT ISOLATION: Request Browser Tab specifically
+        newStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { 
+            width: 1, 
+            height: 1, 
+            frameRate: 1,
+            displaySurface: "browser", // Forces/Encourages Tab selection
+          } as any,
+          audio: {
+            echoCancellation: false, // Essential for high fidelity music/movies
+            noiseSuppression: false,
+            autoGainControl: false,
+            // @ts-ignore
+            systemAudio: 'include'
+          }
+        });
       } else if (selectedDevice?.type === 'system') {
         newStream = await navigator.mediaDevices.getDisplayMedia({
           video: { width: 1, height: 1 },
@@ -64,7 +81,7 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
         newStream = await navigator.mediaDevices.getUserMedia(constraints);
       }
 
-      // Verify audio track exists (critical for system/zoom capture)
+      // Verify audio track exists (critical for system/zoom/tab capture)
       if (newStream.getAudioTracks().length === 0) {
         newStream.getTracks().forEach(t => t.stop());
         throw new Error("No audio track detected. You MUST check the 'Share Audio' box in the browser popup.");

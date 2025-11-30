@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useCallback } from 'react';
 import { AudioDevice } from '../types';
 
@@ -20,11 +21,18 @@ export function useMediaDevices() {
         type: 'microphone'
       }));
 
+      // Add Isolated Tab Audio option
+      formattedDevices.push({
+        deviceId: 'browser-tab-audio',
+        label: 'Browser Tab (Isolated Audio)',
+        type: 'tab'
+      });
+
       // Add System Audio option
       // Note: System audio is captured via getDisplayMedia, not getUserMedia deviceId
       formattedDevices.push({
         deviceId: 'system-audio',
-        label: 'System Audio (Share Tab/Screen)',
+        label: 'System Audio (Share Screen)',
         type: 'system'
       });
 

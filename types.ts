@@ -1,3 +1,4 @@
+
 export enum ConnectionState {
   DISCONNECTED = 'DISCONNECTED',
   CONNECTING = 'CONNECTING',
@@ -27,5 +28,5 @@ export type VoiceName = 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Zephyr';
 export interface AudioDevice {
   deviceId: string;
   label: string;
-  type: 'microphone' | 'system' | 'zoom';
+  type: 'microphone' | 'system' | 'zoom' | 'tab';
 }
