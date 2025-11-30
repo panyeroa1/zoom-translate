@@ -145,80 +145,81 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
         }
 
         const currentTrack = stream.getAudioTracks()[0];
-        if (!currentTrack || currentTrack.readyState !== 'live') {
+        if (!currentTrack || currentTrack.readyState !== 'live' || !currentTrack.enabled) {
              setIsTranscribing(false);
              return;
         }
 
-        try {
-            // Prioritize widely supported codecs
-            const types = [
-                'audio/webm;codecs=opus', 
-                'audio/webm',
-                'audio/mp4',
-                '' // Default fallback
-            ];
-            
-            let options: MediaRecorderOptions | undefined = undefined;
-            
-            for (const type of types) {
-                if (type === '' || MediaRecorder.isTypeSupported(type)) {
-                    if (type) {
-                        options = { mimeType: type };
-                    }
-                    break;
-                }
-            }
-
-            let recorder: MediaRecorder;
-            try {
-                recorder = new MediaRecorder(stream, options);
-            } catch (e) {
-                // Fallback to default constructor if options fail
-                recorder = new MediaRecorder(stream);
-            }
-
-            mediaRecorderRef.current = recorder;
-            mimeTypeRef.current = recorder.mimeType;
-
+        // --- Helper to setup recorder events ---
+        const setupRecorderEvents = (recorder: MediaRecorder) => {
             recorder.ondataavailable = (e) => {
                 if (e.data.size > 0) {
-                    // Assign ID immediately to preserve order
                     const id = chunkSequenceRef.current++;
                     processAudioChunk(e.data, id);
                 }
             };
-
             recorder.onerror = (e) => {
                 console.warn("MediaRecorder Error:", e);
-                // Try to recover by restarting if possible
-                if (recorder.state === 'inactive' && stream.active) {
-                     try {
-                        recorder.start(CHUNK_DURATION);
-                     } catch (retryErr) {
-                        setIsTranscribing(false);
-                     }
-                }
+                // Fatal error for this instance
+                setIsTranscribing(false); 
             };
+        };
 
-            // Double check state before starting
-            if (recorder.state === 'inactive') {
-                try {
-                    recorder.start(CHUNK_DURATION);
-                    setIsTranscribing(true);
-                } catch (startErr) {
-                    console.error("Failed to start MediaRecorder:", startErr);
-                    setIsTranscribing(false);
-                }
+        // --- Strategy 1: Explicit Codecs ---
+        const types = [
+            'audio/webm;codecs=opus', 
+            'audio/webm',
+            'audio/mp4',
+            '' // Default
+        ];
+        
+        let recorder: MediaRecorder | null = null;
+        let success = false;
+
+        // Try to instantiate and start with preferred types
+        for (const type of types) {
+             if (success) break;
+             if (type && !MediaRecorder.isTypeSupported(type)) continue;
+
+             try {
+                const options = type ? { mimeType: type } : undefined;
+                recorder = new MediaRecorder(stream, options);
+                
+                setupRecorderEvents(recorder);
+                
+                // Try to start immediately to verify it works
+                recorder.start(CHUNK_DURATION);
+                
+                // If we get here, it worked
+                mediaRecorderRef.current = recorder;
+                mimeTypeRef.current = recorder.mimeType;
+                success = true;
+                setIsTranscribing(true);
+             } catch (e) {
+                 // Silently fail this type and try next
+                 recorder = null;
+             }
+        }
+
+        // --- Strategy 2: Absolute Fallback (Default Constructor) ---
+        if (!success) {
+            try {
+                console.warn("Falling back to default MediaRecorder configuration");
+                recorder = new MediaRecorder(stream); // No options at all
+                setupRecorderEvents(recorder);
+                recorder.start(CHUNK_DURATION);
+                
+                mediaRecorderRef.current = recorder;
+                mimeTypeRef.current = recorder.mimeType;
+                setIsTranscribing(true);
+            } catch (fatalError) {
+                console.error("Fatal: Failed to start MediaRecorder even with default settings", fatalError);
+                setIsTranscribing(false);
             }
-
-        } catch (e) {
-            console.error("Failed to initialize MediaRecorder:", e);
-            setIsTranscribing(false);
         }
     };
 
-    // Safety delay for browser media pipeline (Increased to 500ms to allow stream stabilization)
+    // Safety delay for browser media pipeline
     const timer = setTimeout(startRecording, 500);
 
     return () => {
