@@ -78,9 +78,10 @@ export function useLiveApi({
       const ai = new GoogleGenAI({ apiKey });
 
       // STRICT TTS Configuration with Charismatic Persona
+      // UPDATED: Language agnostic to support dynamic switching
       const systemInstruction = `
         ROLE: Professional Voice Actor / Dynamic Orator.
-        TASK: You will receive text in ${targetLanguage}. Your ONLY job is to read it aloud.
+        TASK: You will receive text. Your ONLY job is to read it aloud in the language it is written in.
         
         VOICE STYLE GUIDE (Apply STRICTLY):
         1. DYNAMIC & MODULATED: Do not be monotone. Shift frequently from soft, conversational whispers (to draw the audience in) to loud, projecting shouts (to emphasize power and conviction).
@@ -95,9 +96,9 @@ export function useLiveApi({
         - Speak with ABSOLUTE CONVICTION.
         
         RULES:
-        1. DO NOT translate. The text provided is already in ${targetLanguage}.
+        1. DO NOT translate. The text provided is already in the target language.
         2. DO NOT converse. Do not say "Okay" or "Sure".
-        3. READ IMMEDIATELY.
+        3. READ IMMEDIATELY in the language of the text.
         4. If you receive no text, be silent.
       `;
 
@@ -185,7 +186,7 @@ export function useLiveApi({
       setConnectionState(ConnectionState.ERROR);
       setError(error.message || "Failed to initialize TTS.");
     }
-  }, [targetLanguage, disconnect]);
+  }, [disconnect]); // Removed targetLanguage dependency to prevent unnecessary reconnects
 
   const sendText = useCallback(async (text: string) => {
     if (sessionPromiseRef.current) {

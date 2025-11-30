@@ -262,8 +262,8 @@ function App() {
           <div className="absolute inset-0 bg-gradient-to-b from-transparent to-eburon-900/50"></div>
 
           <div className="relative z-10 w-full flex flex-col items-center gap-4">
-             {/* Use volume from TTS engine for visualization since that's what we want to "see" Eburon speaking */}
-             <AudioVisualizer volume={volume} isActive={isConnected} />
+             {/* Main Visualizer - Represents Output Voice */}
+             <AudioVisualizer volume={volume} isActive={isConnected} width={300} height={60} />
              
              {/* Device Selector */}
              {!isConnected && (
@@ -430,22 +430,52 @@ function App() {
       </main>
 
       {/* Footer Controls */}
-      <footer className="border-t border-eburon-700 bg-eburon-900 p-6">
-        <div className="max-w-5xl mx-auto flex items-center justify-center gap-6">
+      <footer className="border-t border-eburon-700 bg-eburon-900 p-6 z-20 relative">
+        <div className="max-w-5xl mx-auto flex items-center justify-center">
           <button
             onClick={handleToggleConnection}
             disabled={isConnecting}
             className={clsx(
-              "group relative flex items-center justify-center w-16 h-16 rounded-full transition-all duration-300 shadow-lg hover:shadow-eburon-accent/20",
+              "group relative overflow-hidden rounded-full transition-all duration-300",
+              "w-64 h-14", // Fixed size pill
               isConnected 
-                ? "bg-red-500/10 border-2 border-red-500 text-red-500 hover:bg-red-500 hover:text-white" 
-                : "bg-eburon-accent/10 border-2 border-eburon-accent text-eburon-accent hover:bg-eburon-accent hover:text-black"
+                ? "bg-red-950/30 border border-red-500/50 hover:bg-red-900/50 shadow-[0_0_20px_rgba(239,68,68,0.2)]" 
+                : "bg-eburon-accent/10 border border-eburon-accent/50 hover:bg-eburon-accent/20 shadow-[0_0_20px_rgba(0,240,255,0.1)] hover:shadow-[0_0_30px_rgba(0,240,255,0.2)]"
             )}
           >
-            {isConnected ? <Power size={24} /> : <Mic size={24} />}
-            <span className="absolute -bottom-8 text-[10px] font-mono uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-gray-400">
-              {isConnected ? 'Terminate' : 'Initialize'}
-            </span>
+            {/* Embedded Audio Visualizer Background - Only Active when Connected */}
+            {isConnected && (
+              <div className="absolute inset-0 opacity-40 pointer-events-none">
+                <AudioVisualizer 
+                  volume={volume} 
+                  isActive={true} 
+                  width={256} 
+                  height={56} 
+                  barCount={40} 
+                  barColor="#ef4444" // Red color for termination state
+                />
+              </div>
+            )}
+
+            {/* Content Layer */}
+            <div className="relative z-10 flex items-center justify-center gap-3 font-mono font-bold tracking-wider text-sm">
+              {isConnecting ? (
+                <>
+                  <Activity className="animate-spin text-eburon-accent" size={18} />
+                  <span className="text-eburon-accent">CONNECTING...</span>
+                </>
+              ) : isConnected ? (
+                <>
+                  <Power size={18} className="text-red-500 group-hover:scale-110 transition-transform" />
+                  <span className="text-red-400 group-hover:text-red-300">TERMINATE PIPELINE</span>
+                </>
+              ) : (
+                <>
+                  <Mic size={18} className="text-eburon-accent group-hover:scale-110 transition-transform" />
+                  <span className="text-eburon-accent group-hover:text-cyan-200">INITIALIZE PIPELINE</span>
+                </>
+              )}
+            </div>
           </button>
         </div>
       </footer>
