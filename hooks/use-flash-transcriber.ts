@@ -174,6 +174,7 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
             try {
                 recorder = new MediaRecorder(stream, options);
             } catch (e) {
+                // Fallback to default constructor if options fail
                 recorder = new MediaRecorder(stream);
             }
 
@@ -190,14 +191,25 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
 
             recorder.onerror = (e) => {
                 console.warn("MediaRecorder Error:", e);
+                // Try to recover by restarting if possible
+                if (recorder.state === 'inactive' && stream.active) {
+                     try {
+                        recorder.start(CHUNK_DURATION);
+                     } catch (retryErr) {
+                        setIsTranscribing(false);
+                     }
+                }
             };
 
-            try {
-                recorder.start(CHUNK_DURATION);
-                setIsTranscribing(true);
-            } catch (startErr) {
-                console.error("Failed to start MediaRecorder:", startErr);
-                setIsTranscribing(false);
+            // Double check state before starting
+            if (recorder.state === 'inactive') {
+                try {
+                    recorder.start(CHUNK_DURATION);
+                    setIsTranscribing(true);
+                } catch (startErr) {
+                    console.error("Failed to start MediaRecorder:", startErr);
+                    setIsTranscribing(false);
+                }
             }
 
         } catch (e) {
@@ -206,8 +218,8 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
         }
     };
 
-    // Safety delay for browser media pipeline
-    const timer = setTimeout(startRecording, 250);
+    // Safety delay for browser media pipeline (Increased to 500ms to allow stream stabilization)
+    const timer = setTimeout(startRecording, 500);
 
     return () => {
       clearTimeout(timer);
