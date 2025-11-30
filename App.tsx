@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles } from 'lucide-react';
+import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles, MicOff } from 'lucide-react';
 import clsx from 'clsx';
 import { useLiveApi } from './hooks/use-live-api';
 import { useMediaDevices } from './hooks/use-media-devices';
@@ -330,6 +330,13 @@ function App() {
                   <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/40 border border-gray-800 text-[10px] text-gray-400">
                     <Sparkles size={10} className={isHybridMode ? "text-eburon-accent" : "text-gray-600"} />
                     {isHybridMode ? "Hybrid Pipeline (Flash v2.5 + TTS)" : "Native Neural Pipeline (Live v2.5)"}
+                  </div>
+               )}
+                {/* Audio Security Indicator */}
+                {isConnected && isHybridMode && (
+                  <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                    <MicOff size={10} className="text-red-500" />
+                    <span>Live API Audio Disabled (TTS Only)</span>
                   </div>
                )}
              </div>

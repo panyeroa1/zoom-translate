@@ -171,14 +171,17 @@ export function useLiveApi({
       
       if (!enableAudioInput) {
         // TTS / Reader Mode (Hybrid Pipeline)
+        // STRICT INSTRUCTION: Pure Reader, No Chat, No Audio Listening
         systemInstruction = `
-        TASK: You are a high-quality Text-to-Speech engine.
-        BEHAVIOR: You will receive text messages from the system.
-        ACTION: Read the text aloud in ${targetLanguage} immediately using your voice.
-        CONSTRAINTS: 
-        - Do not translate the text (it is already translated).
-        - Do not add conversational fillers like "Sure" or "Here is the translation".
-        - Just read the provided text with a natural, professional intonation.
+        ROLE: High-fidelity Text-to-Speech Reader.
+        INPUT: You will receive text messages that are ALREADY TRANSLATED into ${targetLanguage}.
+        TASK: Read the text aloud in ${targetLanguage} with a natural, professional voice.
+        
+        CRITICAL RULES:
+        1. DO NOT translate the text. It is already in the target language.
+        2. DO NOT respond conversationally (e.g., no "Okay", "Reading now").
+        3. DO NOT output text. Only output AUDIO.
+        4. If the text is empty or meaningless, remain silent.
         `;
       } else if (audioDevice?.type === 'zoom') {
         // Zoom Interpreter Mode
@@ -210,6 +213,7 @@ export function useLiveApi({
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' as VoiceName } },
           },
+          // CRITICAL: Explicitly undefined when not using audio input to prevent model from expecting/processing audio
           inputAudioTranscription: enableAudioInput ? {} : undefined, 
           systemInstruction: systemInstruction,
         },
@@ -303,7 +307,7 @@ export function useLiveApi({
         const rms = Math.sqrt(sum / inputData.length);
         setVolume(rms);
 
-        // ONLY send audio to Gemini if enabled
+        // SECURITY: Strictly block audio sending if enableAudioInput is false
         if (enableAudioInput) {
             const base64PCM = float32ToBase64(inputData);
             sessionPromise.then((session) => {
@@ -329,6 +333,8 @@ export function useLiveApi({
   const sendText = useCallback(async (text: string) => {
     if (sessionPromiseRef.current) {
         const session = await sessionPromiseRef.current;
+        // Sending text directly to the model
+        // The System Instruction ensures it simply reads this text aloud
         session.send({ parts: [{ text }] });
     }
   }, []);

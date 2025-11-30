@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 
 const apiKey = process.env.API_KEY || '';
@@ -12,9 +13,15 @@ export async function translateText(
 
   try {
     const prompt = `
-      Translate the following text from ${sourceLanguage} to ${targetLanguage}.
-      Do not add any explanations, notes, or quotes. Just provide the direct translation.
+      You are a professional translator.
+      Source Language: ${sourceLanguage === 'Auto Detect' ? 'Detect language' : sourceLanguage}
+      Target Language: ${targetLanguage}
       
+      Task: Translate the following text accurately and naturally.
+      - Maintain the original tone and intent.
+      - Output ONLY the translation.
+      - Do not include "Translation:" or any other labels.
+
       Text: "${text}"
     `;
 
