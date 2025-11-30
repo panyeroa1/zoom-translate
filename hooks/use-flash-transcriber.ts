@@ -31,11 +31,12 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mimeTypeRef = useRef<string>('');
   
-  // Chunk duration (ms). 
-  const CHUNK_DURATION = 3000; 
+  // Reduced chunk duration for faster feedback (2s)
+  const CHUNK_DURATION = 2000; 
 
   const processAudioChunk = useCallback(async (blob: Blob) => {
-    if (blob.size < 1000) return; // Ignore empty/tiny chunks
+    // Lower threshold to capture short commands or low activity streams
+    if (blob.size < 100) return; 
 
     try {
       const apiKey = process.env.API_KEY;
@@ -76,17 +77,40 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
   }, [language, onTranscript]);
 
   useEffect(() => {
+    // 1. Basic Stream Validation
     if (!stream || !stream.active || stream.getAudioTracks().length === 0) {
       setIsTranscribing(false);
       return;
     }
 
+    const audioTrack = stream.getAudioTracks()[0];
+    if (audioTrack.readyState === 'ended') {
+        setIsTranscribing(false);
+        return;
+    }
+
     // Cleanup previous recorder if it exists
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) { /* ignore */ }
     }
 
     const startRecording = () => {
+        // 2. Late Binding Validation (Stream must still be active after timeout)
+        if (!stream || !stream.active) {
+            console.warn("Stream ended before recorder could start");
+            setIsTranscribing(false);
+            return;
+        }
+
+        const currentTrack = stream.getAudioTracks()[0];
+        if (!currentTrack || currentTrack.readyState !== 'live') {
+             console.warn("Audio track is not live");
+             setIsTranscribing(false);
+             return;
+        }
+
         try {
             // Prioritize widely supported codecs
             const types = [
@@ -127,21 +151,25 @@ export function useFlashTranscriber({ stream, onTranscript, language = 'en-US' }
 
             recorder.onerror = (e) => {
                 console.warn("MediaRecorder Error:", e);
-                setIsTranscribing(false);
             };
 
             // Use timeslice to get chunks automatically
-            recorder.start(CHUNK_DURATION);
-            setIsTranscribing(true);
+            try {
+                recorder.start(CHUNK_DURATION);
+                setIsTranscribing(true);
+            } catch (startErr) {
+                console.error("Failed to start MediaRecorder:", startErr);
+                setIsTranscribing(false);
+            }
 
         } catch (e) {
-            console.error("Failed to start MediaRecorder for transcription:", e);
+            console.error("Failed to initialize MediaRecorder:", e);
             setIsTranscribing(false);
         }
     };
 
-    // Small delay to ensure stream is fully ready (fixes some race conditions with getDisplayMedia)
-    const timer = setTimeout(startRecording, 100);
+    // Increased delay to 250ms to ensure stream is fully "ready" in the browser media pipeline
+    const timer = setTimeout(startRecording, 250);
 
     return () => {
       clearTimeout(timer);

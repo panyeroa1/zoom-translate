@@ -1,12 +1,13 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles, MicOff, Waves, AppWindow } from 'lucide-react';
+import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles, MicOff, Waves, AppWindow, Volume2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useLiveApi } from './hooks/use-live-api';
 import { useMediaDevices } from './hooks/use-media-devices';
 import { useWebSpeech } from './hooks/use-web-speech';
 import { useMediaStream } from './hooks/use-media-stream';
 import { useFlashTranscriber } from './hooks/use-flash-transcriber';
+import { useAudioLevel } from './hooks/use-audio-level';
 import { translateText } from './utils/translator';
 import { LANGUAGES, getLanguageCode } from './utils/languages';
 import AudioVisualizer from './components/AudioVisualizer';
@@ -41,6 +42,9 @@ function App() {
     error: streamError 
   } = useMediaStream(selectedDevice);
 
+  // Monitor Input Volume for Visualization
+  const { level: inputLevel } = useAudioLevel(stream);
+
   // --- 2. DESTINATION: TTS Engine (Gemini Live) ---
   // Reads aloud the translated text
   const { 
@@ -48,11 +52,16 @@ function App() {
     disconnect: disconnectLive, 
     sendText: sendTextToLive,
     connectionState, 
-    volume,
+    volume: outputVolume,
     error: liveError
   } = useLiveApi({ 
     targetLanguage,
   });
+
+  // Combine Input and Output volume for a unified visualizer experience
+  // If the user is speaking/system is playing, show that. 
+  // If the AI is talking, show that.
+  const visualizerVolume = Math.max(inputLevel, outputVolume);
 
   // --- 3A. TRANSCRIPTION (Microphone) ---
   // Uses Web Speech API for low latency local mic transcription
@@ -263,8 +272,18 @@ function App() {
           <div className="absolute inset-0 bg-gradient-to-b from-transparent to-eburon-900/50"></div>
 
           <div className="relative z-10 w-full flex flex-col items-center gap-4">
-             {/* Main Visualizer - Represents Output Voice */}
-             <AudioVisualizer volume={volume} isActive={isConnected} width={300} height={60} />
+             {/* Main Visualizer - Mixed Input/Output */}
+             <div className="relative w-full max-w-[300px] h-[60px]">
+                <AudioVisualizer volume={visualizerVolume} isActive={isConnected} width={300} height={60} />
+                
+                {/* Input Level Indicator overlay (helps debug silence) */}
+                {isConnected && selectedDevice?.type !== 'microphone' && (
+                  <div className="absolute bottom-0 right-0 flex items-center gap-1 bg-black/50 px-1.5 py-0.5 rounded text-[8px] text-gray-400 font-mono pointer-events-none">
+                    <Volume2 size={8} className={inputLevel > 0.01 ? "text-green-400" : "text-gray-600"} />
+                    <span>IN: {(inputLevel * 100).toFixed(0)}%</span>
+                  </div>
+                )}
+             </div>
              
              {/* Device Selector */}
              {!isConnected && (
@@ -332,7 +351,12 @@ function App() {
                             </>
                          )}
                     </div>
-                    {isFlashTranscribing && <span className="text-[9px] text-gray-600">Processing Stream...</span>}
+                    {isFlashTranscribing && (
+                       <span className="text-[9px] text-gray-600 flex items-center gap-1">
+                          <Activity size={8} className="animate-pulse" />
+                          Processing {selectedDevice?.type === 'zoom' ? 'Zoom' : 'System'} Stream...
+                       </span>
+                    )}
                   </div>
                ) : 'System Standby'}
 
@@ -448,7 +472,7 @@ function App() {
             {isConnected && (
               <div className="absolute inset-0 opacity-40 pointer-events-none">
                 <AudioVisualizer 
-                  volume={volume} 
+                  volume={visualizerVolume} 
                   isActive={true} 
                   width={256} 
                   height={56} 
