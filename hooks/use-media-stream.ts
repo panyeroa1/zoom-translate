@@ -1,4 +1,3 @@
-
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { AudioDevice } from '../types';
 
@@ -6,6 +5,19 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  
+  // Use a ref to track the current stream for stable access in callbacks and cleanup
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Stop Stream - Defined before startStream to avoid usage before declaration
+  const stopStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setStream(null);
+    setIsStreaming(false);
+  }, []);
 
   // Capture Zoom Meeting Audio (Window Level)
   const captureZoomAudio = async (): Promise<MediaStream> => {
@@ -25,8 +37,9 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
           sampleRate: 48000,
           // @ts-ignore
           systemAudio: 'include'
-        }
-      });
+        },
+        selfBrowserSurface: "exclude"
+      } as any);
       return displayStream;
     } catch (err: any) {
       if (err.name === 'NotAllowedError' && err.message.includes('permissions policy')) {
@@ -40,45 +53,71 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
     setError(null);
     try {
       let newStream: MediaStream;
+      let displaySurfaceCheck: 'browser' | 'window' | 'monitor' | null = null;
 
-      if (selectedDevice?.type === 'zoom') {
-        newStream = await captureZoomAudio();
-      } else if (selectedDevice?.type === 'tab') {
-        // STRICT ISOLATION: Request Browser Tab specifically
-        newStream = await navigator.mediaDevices.getDisplayMedia({
-          video: { 
-            width: 1, 
-            height: 1, 
+      // Configuration based on device type
+      let displayMediaOptions: any = {
+        video: {
+            width: 1,
+            height: 1,
             frameRate: 1,
-            displaySurface: "browser", // Forces/Encourages Tab selection
-          } as any,
-          audio: {
+        },
+        audio: {
             echoCancellation: false, // Essential for high fidelity music/movies
             noiseSuppression: false,
             autoGainControl: false,
-            // @ts-ignore
-            systemAudio: 'include'
-          }
-        });
-      } else if (selectedDevice?.type === 'system') {
-        newStream = await navigator.mediaDevices.getDisplayMedia({
-          video: { width: 1, height: 1 },
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-            // @ts-ignore
-            systemAudio: 'include'
-          }
-        });
-      } else {
-        // Microphone
-        const constraints: MediaStreamConstraints = {
+            channelCount: 2
+        },
+        selfBrowserSurface: "exclude" // Prevent capturing the app itself to avoid feedback
+      };
+
+      if (selectedDevice?.type === 'microphone') {
+         // Standard Mic Capture
+         const constraints: MediaStreamConstraints = {
           audio: selectedDevice?.deviceId 
             ? { deviceId: { exact: selectedDevice.deviceId } } 
             : true
         };
         newStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      } else {
+        // Display Media Capture (Tab, Window, System, Zoom)
+        
+        if (selectedDevice?.type === 'tab') {
+            displayMediaOptions.video.displaySurface = "browser";
+            displayMediaOptions.preferCurrentTab = false;
+            displaySurfaceCheck = 'browser';
+        } else if (selectedDevice?.type === 'window' || selectedDevice?.type === 'zoom') {
+            displayMediaOptions.video.displaySurface = "window";
+            displaySurfaceCheck = 'window';
+        } else if (selectedDevice?.type === 'system') {
+            displayMediaOptions.video.displaySurface = "monitor";
+            displayMediaOptions.systemAudio = "include"; 
+            displaySurfaceCheck = 'monitor';
+        }
+
+        // Acquire Stream
+        newStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+
+        // --- STRICT ISOLATION CHECK ---
+        // Verify the user actually selected the correct type of source to prevent audio leakage.
+        const videoTrack = newStream.getVideoTracks()[0];
+        const settings = videoTrack.getSettings();
+
+        // Note: Some browsers might not report displaySurface, so we check if it exists first.
+        if (displaySurfaceCheck && settings.displaySurface && settings.displaySurface !== displaySurfaceCheck) {
+            // Stop immediately to prevent leakage
+            newStream.getTracks().forEach(t => t.stop());
+            
+            let msg = "Incorrect Source Selected.";
+            if (displaySurfaceCheck === 'browser') {
+                msg = "Strict Isolation Failed: You selected a specific Window or Entire Screen instead of a 'Chrome Tab'. This causes audio leakage. Please try again and select the Tab tab.";
+            } else if (displaySurfaceCheck === 'window') {
+                msg = "Strict Isolation Failed: You selected the Entire Screen instead of a specific Window. Please try again.";
+            }
+            
+            throw new Error(msg);
+        }
       }
 
       // Verify audio track exists (critical for system/zoom/tab capture)
@@ -95,27 +134,25 @@ export function useMediaStream(selectedDevice?: AudioDevice) {
       });
 
       setStream(newStream);
+      streamRef.current = newStream; // Update ref immediately
       setIsStreaming(true);
     } catch (e: any) {
       console.error("Stream acquisition failed:", e);
-      setError(e.message || "Failed to acquire audio stream.");
+      // Clean error message
+      let msg = e.message || "Failed to acquire audio stream.";
+      if (e.name === 'NotAllowedError') {
+          msg = "Permission denied. You cancelled the selection.";
+      }
+      setError(msg);
       setIsStreaming(false);
     }
-  }, [selectedDevice]);
-
-  const stopStream = useCallback(() => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-      setIsStreaming(false);
-    }
-  }, [stream]);
+  }, [selectedDevice, stopStream]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
   }, []);

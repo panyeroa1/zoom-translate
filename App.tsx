@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles, MicOff, Waves, AppWindow, Volume2 } from 'lucide-react';
+import { Mic, Power, Globe, Activity, Terminal, User, Settings, Laptop, ArrowRight, Video, AlertTriangle, ExternalLink, Sparkles, MicOff, Waves, AppWindow, Layers, Volume2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useLiveApi } from './hooks/use-live-api';
 import { useMediaDevices } from './hooks/use-media-devices';
@@ -12,6 +12,7 @@ import { translateText } from './utils/translator';
 import { LANGUAGES, getLanguageCode } from './utils/languages';
 import AudioVisualizer from './components/AudioVisualizer';
 import ChatMessage from './components/ChatMessage';
+import DeviceSelector from './components/DeviceSelector';
 import { ConnectionState, TranscriptItem, AudioDevice } from './types';
 
 function App() {
@@ -117,7 +118,7 @@ function App() {
     }
   });
 
-  // --- 3B. TRANSCRIPTION (System/Zoom/Tab) ---
+  // --- 3B. TRANSCRIPTION (System/Zoom/Tab/Window) ---
   // Uses Gemini Flash to transcribe the MediaStream since WebSpeech can't
   const { isTranscribing: isFlashTranscribing } = useFlashTranscriber({
     stream: selectedDevice?.type !== 'microphone' ? stream : null, // Only active for non-mic
@@ -125,6 +126,7 @@ function App() {
     language: sourceLanguage === 'Auto Detect' ? undefined : sourceLanguage
   });
 
+  const isScreenCapture = selectedDevice && ['system', 'zoom', 'tab', 'window'].includes(selectedDevice.type);
 
   // --- CONNECTION MANAGEMENT ---
   const connect = useCallback(async () => {
@@ -198,9 +200,21 @@ function App() {
 
   const getSourceIcon = () => {
     if (selectedDevice?.type === 'zoom') return <Video size={10} />;
-    if (selectedDevice?.type === 'tab') return <AppWindow size={10} />;
+    if (selectedDevice?.type === 'tab') return <Globe size={10} />;
+    if (selectedDevice?.type === 'window') return <Layers size={10} />;
     if (selectedDevice?.type === 'system') return <Laptop size={10} />;
     return <Mic size={10} />;
+  };
+
+  const getSourceLabel = () => {
+    if (!selectedDevice) return '';
+    switch(selectedDevice.type) {
+      case 'zoom': return 'ZOOM_STREAM';
+      case 'tab': return 'TAB_ISOLATED';
+      case 'window': return 'APP_WINDOW';
+      case 'system': return 'INTERNAL_AUDIO';
+      default: return 'MICROPHONE';
+    }
   };
 
   return (
@@ -288,22 +302,12 @@ function App() {
              {/* Device Selector */}
              {!isConnected && (
                <div className="flex flex-col gap-3 items-center w-full max-w-md">
-                 <div className="flex items-center gap-2 bg-black/30 p-2 rounded-lg border border-eburon-700/50 w-full">
-                   <Settings size={14} className="text-gray-500 ml-2" />
-                   <select 
-                     className="bg-transparent text-xs font-mono text-gray-300 focus:outline-none w-full"
-                     value={selectedDevice?.deviceId || ''}
-                     onChange={(e) => {
-                       const device = devices.find(d => d.deviceId === e.target.value);
-                       setSelectedDevice(device);
-                     }}
-                   >
-                     {devices.map(device => (
-                       <option key={device.deviceId} value={device.deviceId}>
-                         {device.label}
-                       </option>
-                     ))}
-                   </select>
+                 <div className="w-full">
+                   <DeviceSelector 
+                     devices={devices}
+                     selectedDevice={selectedDevice}
+                     onSelect={setSelectedDevice}
+                   />
                  </div>
 
                  {/* Zoom Meeting Specific Control */}
@@ -354,7 +358,7 @@ function App() {
                     {isFlashTranscribing && (
                        <span className="text-[9px] text-gray-600 flex items-center gap-1">
                           <Activity size={8} className="animate-pulse" />
-                          Processing {selectedDevice?.type === 'zoom' ? 'Zoom' : 'System'} Stream...
+                          Processing {selectedDevice?.label || 'Source'} Stream...
                        </span>
                     )}
                   </div>
@@ -364,7 +368,7 @@ function App() {
                {isConnected && (
                   <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/40 border border-gray-800 text-[10px] text-gray-400">
                     <Waves size={10} className="text-gray-500" />
-                    <span>{selectedDevice?.type === 'microphone' ? 'WebSpeech' : (selectedDevice?.type === 'tab' ? 'Isolated Tab' : 'Flash Audio')} Input</span>
+                    <span>{selectedDevice?.type === 'microphone' ? 'WebSpeech' : 'Stream'} Input</span>
                     <span className="text-gray-600">→</span>
                     <Globe size={10} className="text-eburon-accent" />
                     <span>Flash Translate</span>
@@ -378,12 +382,15 @@ function App() {
         </div>
 
         {/* Alerts and Warnings */}
-        {(selectedDevice?.type === 'system' || selectedDevice?.type === 'zoom' || selectedDevice?.type === 'tab') && !isConnected && (
+        {isScreenCapture && !isConnected && (
             <div className="bg-amber-900/20 border border-amber-500/30 rounded-lg p-3 flex items-start gap-3">
               <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={16} />
               <div className="text-xs text-amber-200/80">
                 <p className="font-bold mb-1">AUDIO PERMISSION REQUIRED:</p>
-                <p>When you click Initialize, a browser popup will appear. You MUST select the <strong>{selectedDevice.type === 'tab' ? 'Browser Tab' : 'Window/Screen'}</strong> and check the <strong className="text-white border-b border-white/30">"Share Audio"</strong> box.</p>
+                <p>When you click Initialize, a browser popup will appear. You MUST select the 
+                   {selectedDevice?.type === 'system' ? <strong> "Entire Screen"</strong> : (selectedDevice?.type === 'tab' ? <strong> "Browser Tab"</strong> : <strong> "Window/App"</strong>)}
+                   {' '}and check the <strong className="text-white border-b border-white/30">"Share Audio"</strong> box.
+                </p>
               </div>
             </div>
         )}
@@ -406,10 +413,10 @@ function App() {
               <Terminal size={14} className="text-gray-500" />
               <span className="text-xs text-gray-400 font-mono">LIVE_TRANSCRIPT_LOG</span>
             </div>
-            {(selectedDevice?.type === 'system' || selectedDevice?.type === 'zoom' || selectedDevice?.type === 'tab') && (
+            {isScreenCapture && (
               <div className="flex items-center gap-1 text-[10px] text-eburon-accent font-mono border border-eburon-accent/20 px-1.5 rounded bg-eburon-accent/5">
                 {getSourceIcon()}
-                {selectedDevice.type === 'zoom' ? 'ZOOM_STREAM' : (selectedDevice.type === 'tab' ? 'TAB_ISOLATED' : 'SYSTEM_AUDIO')}
+                {getSourceLabel()}
               </div>
             )}
           </div>
@@ -435,9 +442,7 @@ function App() {
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs font-bold uppercase tracking-wider opacity-70">
-                      {selectedDevice?.type === 'system' || selectedDevice?.type === 'zoom' || selectedDevice?.type === 'tab'
-                        ? 'Stream Analysis' 
-                        : 'Microphone Input'}
+                      {isScreenCapture ? 'Stream Analysis' : 'Microphone Input'}
                     </span>
                     <span className="text-[10px] px-1 rounded animate-pulse bg-eburon-accent/10 text-eburon-accent">
                       LISTENING

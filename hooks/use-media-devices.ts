@@ -21,22 +21,28 @@ export function useMediaDevices() {
         type: 'microphone'
       }));
 
-      // Add Isolated Tab Audio option
+      // 1. Browser Tab
       formattedDevices.push({
         deviceId: 'browser-tab-audio',
         label: 'Browser Tab (Isolated Audio)',
         type: 'tab'
       });
 
-      // Add System Audio option
-      // Note: System audio is captured via getDisplayMedia, not getUserMedia deviceId
+      // 2. Specific App Window
+      formattedDevices.push({
+        deviceId: 'app-window-audio',
+        label: 'Specific App Window (Spotify, VLC...)',
+        type: 'window'
+      });
+
+      // 3. System Audio
       formattedDevices.push({
         deviceId: 'system-audio',
-        label: 'System Audio (Share Screen)',
+        label: 'Device Internal Audio',
         type: 'system'
       });
 
-      // Add Zoom API Source
+      // 4. Zoom Meeting
       formattedDevices.push({
         deviceId: 'zoom-api-stream',
         label: 'Zoom Meeting (Live Stream)',

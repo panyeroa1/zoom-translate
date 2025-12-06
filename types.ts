@@ -28,5 +28,5 @@ export type VoiceName = 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Zephyr';
 export interface AudioDevice {
   deviceId: string;
   label: string;
-  type: 'microphone' | 'system' | 'zoom' | 'tab';
+  type: 'microphone' | 'system' | 'zoom' | 'tab' | 'window';
 }
